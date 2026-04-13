@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
@@ -12,6 +13,7 @@ final sessionProvider = NotifierProvider<SessionNotifier, ActiveSession?>(Sessio
 class SessionNotifier extends Notifier<ActiveSession?> {
   static const _uuid = Uuid();
   Timer? _restTimer;
+  VoidCallback? onRestDone;
 
   @override
   ActiveSession? build() {
@@ -72,13 +74,15 @@ class SessionNotifier extends Notifier<ActiveSession?> {
           completed: false,
         ));
 
+        final finalRestSeconds = set.restSeconds ?? 60;
+        debugPrint('[ACTIVE_SET_BUILD] historySetId=$historySetId, setNumber=${set.setNumber}, sourceRestSeconds=${set.restSeconds}, finalRestSeconds=$finalRestSeconds');
         activeSets.add(ActiveSet(
           historySetId: historySetId,
           setNumber: set.setNumber,
           plannedReps: set.reps,
           plannedWeight: set.weight,
           plannedDuration: set.durationSeconds,
-          restSeconds: set.restSeconds ?? 60,
+          restSeconds: finalRestSeconds,
         ));
       }
 
@@ -110,10 +114,13 @@ class SessionNotifier extends Notifier<ActiveSession?> {
   }
 
   /// Complète une série identifiée par son historySetId.
-  /// Lance le chrono de repos si configuré, sauf si c'est la dernière série.
-  Future<void> completeSetById(String historySetId) async {
+  /// Règle : le chrono utilise le restSeconds de CETTE série (celle cochée).
+  /// Exception : dernière série du dernier exercice → pas de chrono.
+  void completeSetById(String historySetId) {
     final s = state;
     if (s == null) return;
+
+    debugPrint('[STATE_FLOW] completeSetById entry: isResting=${s.isResting}, rest=${s.restSecondsRemaining}');
 
     // Trouver la série dans tous les exercices
     int exIndex = -1;
@@ -133,34 +140,54 @@ class SessionNotifier extends Notifier<ActiveSession?> {
     final exercises = List.of(s.exercises);
     final exercise = exercises[exIndex];
     final sets = List.of(exercise.sets);
-    final targetSet = sets[setIdx].copyWith(
+
+    // Capturer les données de la série cochée AVANT le copyWith
+    final checkedSet = sets[setIdx];
+    final completedSet = checkedSet.copyWith(
       completed: true,
-      actualReps: sets[setIdx].actualReps ?? sets[setIdx].plannedReps,
-      actualWeight: sets[setIdx].actualWeight ?? sets[setIdx].plannedWeight,
+      actualReps: checkedSet.actualReps ?? checkedSet.plannedReps,
+      actualWeight: checkedSet.actualWeight ?? checkedSet.plannedWeight,
     );
-    sets[setIdx] = targetSet;
+    sets[setIdx] = completedSet;
     exercises[exIndex] = exercise.copyWith(sets: sets);
 
-    await ref.read(historyRepoProvider).updateHistorySet(
+    final updatedSession = s.copyWith(exercises: exercises);
+
+    debugPrint('[SESSION_CHECK] completeSetById called: setId=$historySetId');
+    debugPrint('[SESSION_CHECK] checkedSet found: setNumber=${checkedSet.setNumber}, completed_before=${checkedSet.completed}, completed_after=true, restSeconds=${checkedSet.restSeconds}');
+
+    // Dernière série du dernier exercice → pas de chrono, l'UI affiche le bouton Terminer
+    final isLastExercise = exIndex == s.exercises.length - 1;
+    final isLastSetOfExercise = setIdx == s.exercises[exIndex].sets.length - 1;
+    debugPrint('[SESSION_CHECK] exIndex=$exIndex/${s.exercises.length - 1}, setIdx=$setIdx/${s.exercises[exIndex].sets.length - 1}, isLastExercise=$isLastExercise, isLastSetOfExercise=$isLastSetOfExercise');
+
+    if (isLastExercise && isLastSetOfExercise) {
+      debugPrint('[SESSION_CHECK] isLastSetOfLastExercise=true → no timer, showing Terminer button');
+      debugPrint('[STATE_FLOW] before state assign A: isResting=${state?.isResting}, rest=${state?.restSecondsRemaining}');
+      state = updatedSession;
+      debugPrint('[STATE_FLOW] after state assign A: isResting=${state?.isResting}, rest=${state?.restSecondsRemaining}');
+    } else {
+      debugPrint('[SESSION_CHECK] isLastSetOfLastExercise=false');
+      debugPrint('[STATE_FLOW] before state assign B: isResting=${state?.isResting}, rest=${state?.restSecondsRemaining}');
+      state = updatedSession;
+      debugPrint('[STATE_FLOW] after state assign B: isResting=${state?.isResting}, rest=${state?.restSecondsRemaining}');
+      if (checkedSet.restSeconds > 0) {
+        debugPrint('[SESSION_CHECK] rest timer STARTED with restSeconds=${checkedSet.restSeconds}');
+        debugPrint('[STATE_FLOW] before _startRestTimer: isResting=${state?.isResting}, rest=${state?.restSecondsRemaining}');
+        _startRestTimer(checkedSet.restSeconds);
+        debugPrint('[STATE_FLOW] after _startRestTimer: isResting=${state?.isResting}, rest=${state?.restSecondsRemaining}');
+      } else {
+        debugPrint('[SESSION_CHECK] rest timer NOT started because restSeconds=${checkedSet.restSeconds}');
+      }
+    }
+
+    // Écriture en base après la mise à jour UI (non bloquante)
+    ref.read(historyRepoProvider).updateHistorySet(
       historySetId,
-      actualReps: targetSet.actualReps,
-      actualWeight: targetSet.actualWeight,
+      actualReps: completedSet.actualReps,
+      actualWeight: completedSet.actualWeight,
       completed: true,
     );
-
-    final updatedSession = s.copyWith(exercises: exercises);
-    final allDone = updatedSession.exercises
-        .expand((e) => e.sets)
-        .every((s) => s.completed);
-
-    state = updatedSession;
-
-    // Pas de chrono après la dernière série
-    if (allDone) return;
-
-    if (targetSet.restSeconds > 0) {
-      _startRestTimer(targetSet.restSeconds);
-    }
   }
 
   /// Termine explicitement la séance (appelé depuis l'UI quand toutes les séries sont faites).
@@ -248,12 +275,15 @@ class SessionNotifier extends Notifier<ActiveSession?> {
   // ── Privé ──────────────────────────────────────────────────────────────────
 
   void _startRestTimer(int seconds) {
+    debugPrint('[REST_TIMER] _startRestTimer called with duration=$seconds');
+    debugPrint('[REST_TIMER] before state assign: isResting=${state?.isResting}, rest=${state?.restSecondsRemaining}');
     _restTimer?.cancel();
     state = state!.copyWith(
       isResting: true,
       restSecondsRemaining: seconds,
       restTotalSeconds: seconds,
     );
+    debugPrint('[REST_TIMER] after state assign: isResting=${state?.isResting}, rest=${state?.restSecondsRemaining}');
 
     _restTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       final s = state;
@@ -262,6 +292,7 @@ class SessionNotifier extends Notifier<ActiveSession?> {
       if (remaining <= 0) {
         _restTimer?.cancel();
         state = s.copyWith(isResting: false, restSecondsRemaining: 0);
+        onRestDone?.call();
       } else {
         state = s.copyWith(restSecondsRemaining: remaining);
       }

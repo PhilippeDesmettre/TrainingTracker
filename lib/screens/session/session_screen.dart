@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:just_audio/just_audio.dart';
 
 import '../../core/theme/app_theme.dart';
 import '../../models/active_session.dart';
@@ -21,22 +22,72 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
   Timer? _elapsedTimer;
   Duration _elapsed = Duration.zero;
   bool _loading = true;
+  late final AudioPlayer _audioPlayer;
+  ProviderSubscription<ActiveSession?>? _sessionSub;
 
   @override
   void initState() {
     super.initState();
-    _startSession();
+    _sessionSub = ref.listenManual<ActiveSession?>(
+      sessionProvider,
+      (previous, next) {
+        debugPrint(
+          '[SESSION_LISTEN] '
+          'prev: isResting=${previous?.isResting}, rest=${previous?.restSecondsRemaining}, total=${previous?.restTotalSeconds} '
+          '-> '
+          'next: isResting=${next?.isResting}, rest=${next?.restSecondsRemaining}, total=${next?.restTotalSeconds}',
+        );
+      },
+    );
+    _init();
+  }
+
+  Future<void> _init() async {
+    _audioPlayer = AudioPlayer();
+    await _audioPlayer.setAsset('assets/sounds/beep.wav');
+    debugPrint('[AUDIO] asset loaded');
+    await _startSession();
   }
 
   @override
   void dispose() {
+    _sessionSub?.close();
+    ref.read(sessionProvider.notifier).onRestDone = null;
     _elapsedTimer?.cancel();
+    _audioPlayer.dispose();
     super.dispose();
   }
 
   Future<void> _startSession() async {
     await ref.read(sessionProvider.notifier).startSession(widget.workoutId);
     if (!mounted) return;
+    ref.read(sessionProvider.notifier).onRestDone = () async {
+      debugPrint('[AUDIO] onRestDone called');
+      if (!mounted) {
+        debugPrint('[AUDIO] widget not mounted, abort');
+        return;
+      }
+
+      try {
+        debugPrint('[AUDIO] before seek');
+        await _audioPlayer.seek(Duration.zero);
+        debugPrint('[AUDIO] after seek');
+
+        debugPrint('[AUDIO] before play');
+        await _audioPlayer.play();
+        debugPrint('[AUDIO] after play');
+      } catch (e, st) {
+        debugPrint('[AUDIO] error: $e');
+        debugPrint('$st');
+      }
+
+      debugPrint('[AUDIO] triggering haptics');
+      HapticFeedback.heavyImpact();
+      Future.delayed(const Duration(milliseconds: 300), () {
+        HapticFeedback.heavyImpact();
+        Future.delayed(const Duration(milliseconds: 300), HapticFeedback.heavyImpact);
+      });
+    };
     setState(() => _loading = false);
     _elapsedTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       setState(() => _elapsed = ref.read(sessionProvider)?.elapsed ?? Duration.zero);
@@ -67,18 +118,16 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Triple buzz quand le chrono de repos se termine naturellement
-    ref.listen<ActiveSession?>(sessionProvider, (prev, next) {
-      if (prev?.isResting == true && next?.isResting == false) {
-        HapticFeedback.heavyImpact();
-        Future.delayed(const Duration(milliseconds: 300), () {
-          HapticFeedback.heavyImpact();
-          Future.delayed(const Duration(milliseconds: 300), HapticFeedback.heavyImpact);
-        });
-      }
-    });
-
     final session = ref.watch(sessionProvider);
+
+    debugPrint(
+      '[SESSION_UI] build: '
+      'loading=$_loading, '
+      'isResting=${session?.isResting}, '
+      'rest=${session?.restSecondsRemaining}, '
+      'total=${session?.restTotalSeconds}, '
+      'isCompleted=${session?.isCompleted}',
+    );
 
     if (_loading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
@@ -127,6 +176,11 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
 
     final nextSetId = allDone ? null : _findNextSetId(session);
 
+    debugPrint(
+      '[SESSION_UI] bottomNavigationBar='
+      '${session.isResting ? 'RestBanner' : allDone ? 'FinishButton' : 'null'}',
+    );
+
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) async {
@@ -165,6 +219,7 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
                     exerciseIndex: index,
                     totalExercises: session.exercises.length,
                     nextSetId: nextSetId,
+                    isResting: session.isResting,
                     onCheckSet: (setId) =>
                         ref.read(sessionProvider.notifier).completeSetById(setId),
                   ),
@@ -267,6 +322,7 @@ class _ExerciseSection extends StatelessWidget {
     required this.exerciseIndex,
     required this.totalExercises,
     required this.nextSetId,
+    required this.isResting,
     required this.onCheckSet,
   });
 
@@ -274,6 +330,7 @@ class _ExerciseSection extends StatelessWidget {
   final int exerciseIndex;
   final int totalExercises;
   final String? nextSetId;
+  final bool isResting;
   final void Function(String historySetId) onCheckSet;
 
   @override
@@ -342,7 +399,7 @@ class _ExerciseSection extends StatelessWidget {
             (set) => _SetRow(
               set: set,
               isNext: set.historySetId == nextSetId,
-              onCheck: set.completed ? null : () => onCheckSet(set.historySetId),
+              onCheck: (set.completed || isResting) ? null : () => onCheckSet(set.historySetId),
             ),
           ),
 
@@ -473,6 +530,9 @@ class _RestBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    debugPrint(
+      '[REST_BANNER] build: secondsRemaining=$secondsRemaining, totalSeconds=$totalSeconds',
+    );
     final progress =
         totalSeconds > 0 ? 1.0 - (secondsRemaining / totalSeconds) : 1.0;
     final mm = (secondsRemaining ~/ 60).toString().padLeft(2, '0');
