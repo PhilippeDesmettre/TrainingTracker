@@ -93,34 +93,19 @@ class _ExerciseList extends StatelessWidget {
 
   Future<void> _showAddExerciseDialog(BuildContext context) async {
     final nameCtrl = TextEditingController();
-    final muscleCtrl = TextEditingController();
 
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Ajouter un exercice'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Nom *',
-                hintText: 'Ex: Développé couché',
-              ),
-              textCapitalization: TextCapitalization.sentences,
-              autofocus: true,
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: muscleCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Groupe musculaire',
-                hintText: 'Ex: Pectoraux',
-              ),
-              textCapitalization: TextCapitalization.sentences,
-            ),
-          ],
+        content: TextField(
+          controller: nameCtrl,
+          decoration: const InputDecoration(
+            labelText: 'Nom *',
+            hintText: 'Ex: Développé couché',
+          ),
+          textCapitalization: TextCapitalization.sentences,
+          autofocus: true,
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
@@ -139,7 +124,6 @@ class _ExerciseList extends StatelessWidget {
         id: const Uuid().v4(),
         workoutId: workoutId,
         name: nameCtrl.text.trim(),
-        muscleGroup: muscleCtrl.text.trim().isEmpty ? null : muscleCtrl.text.trim(),
         orderIndex: exercises.length,
       );
       await ref.read(workoutRepoProvider).insertExercise(exercise);
@@ -148,62 +132,83 @@ class _ExerciseList extends StatelessWidget {
   }
 
   Future<void> _showAddSetDialog(BuildContext context, Exercise exercise) async {
+    final lastRest = exercise.sets.isNotEmpty ? (exercise.sets.last.restSeconds ?? 60) : 60;
     final repsCtrl = TextEditingController(text: '10');
-    final weightCtrl = TextEditingController(text: '0');
-    final restCtrl = TextEditingController(text: '90');
+    final minCtrl = TextEditingController(text: '${lastRest ~/ 60}');
+    final secCtrl = TextEditingController(text: (lastRest % 60).toString().padLeft(2, '0'));
+    String? error;
 
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('Série #${exercise.sets.length + 1}'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: repsCtrl,
-                    decoration: const InputDecoration(labelText: 'Reps'),
-                    keyboardType: TextInputType.number,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text('Série #${exercise.sets.length + 1}'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: repsCtrl,
+                decoration: const InputDecoration(labelText: 'Reps'),
+                keyboardType: TextInputType.number,
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: minCtrl,
+                      decoration: const InputDecoration(labelText: 'Min'),
+                      keyboardType: TextInputType.number,
+                    ),
                   ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: TextField(
-                    controller: weightCtrl,
-                    decoration: const InputDecoration(labelText: 'Charge (kg)'),
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextField(
+                      controller: secCtrl,
+                      decoration: const InputDecoration(labelText: 'Sec'),
+                      keyboardType: TextInputType.number,
+                    ),
                   ),
-                ),
+                ],
+              ),
+              if (error != null) ...[
+                const SizedBox(height: 8),
+                Text(error!, style: const TextStyle(color: AppColors.error, fontSize: 12)),
               ],
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: restCtrl,
-              decoration: const InputDecoration(labelText: 'Repos (secondes)', hintText: '90'),
-              keyboardType: TextInputType.number,
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
+            ElevatedButton(
+              onPressed: () {
+                final min = int.tryParse(minCtrl.text) ?? 0;
+                final sec = int.tryParse(secCtrl.text) ?? 0;
+                if (min > 50) {
+                  setDialogState(() => error = 'Les minutes doivent être entre 0 et 50');
+                  return;
+                }
+                if (sec > 59) {
+                  setDialogState(() => error = 'Les secondes doivent être entre 0 et 59');
+                  return;
+                }
+                Navigator.pop(ctx, true);
+              },
+              child: const Text('Ajouter'),
             ),
           ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Ajouter'),
-          ),
-        ],
       ),
     );
 
     if (confirmed == true) {
+      final min = int.tryParse(minCtrl.text) ?? 0;
+      final sec = int.tryParse(secCtrl.text) ?? 0;
       final set = ExerciseSet(
         id: const Uuid().v4(),
         exerciseId: exercise.id,
         setNumber: exercise.sets.length + 1,
         reps: int.tryParse(repsCtrl.text),
-        weight: double.tryParse(weightCtrl.text),
-        restSeconds: int.tryParse(restCtrl.text) ?? 90,
+        restSeconds: (min * 60) + sec,
       );
       await ref.read(workoutRepoProvider).insertSet(set);
       ref.invalidate(exercisesProvider(workoutId));
@@ -291,7 +296,6 @@ class _ExerciseCard extends StatelessWidget {
                 children: [
                   _ColHeader('Série', width: 40),
                   _ColHeader('Reps', width: 60),
-                  _ColHeader('Charge', width: 80),
                   _ColHeader('Repos', width: 60),
                   const Spacer(),
                 ],
@@ -339,9 +343,6 @@ class _SetRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final weight = set.weight != null
-        ? (set.weight! % 1 == 0 ? '${set.weight!.toInt()}kg' : '${set.weight}kg')
-        : '—';
     final rest = set.restSeconds != null ? '${set.restSeconds}s' : '—';
 
     return Padding(
@@ -358,10 +359,6 @@ class _SetRow extends StatelessWidget {
           SizedBox(
             width: 60,
             child: Text('${set.reps ?? '—'}', style: Theme.of(context).textTheme.bodyMedium),
-          ),
-          SizedBox(
-            width: 80,
-            child: Text(weight, style: Theme.of(context).textTheme.bodyMedium),
           ),
           SizedBox(
             width: 60,
@@ -415,28 +412,16 @@ class _BottomBar extends ConsumerWidget {
 
   Future<void> _showAddExerciseDialog(BuildContext context, WidgetRef ref) async {
     final nameCtrl = TextEditingController();
-    final muscleCtrl = TextEditingController();
 
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Ajouter un exercice'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameCtrl,
-              decoration: const InputDecoration(labelText: 'Nom *', hintText: 'Ex: Squat'),
-              textCapitalization: TextCapitalization.sentences,
-              autofocus: true,
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: muscleCtrl,
-              decoration: const InputDecoration(labelText: 'Groupe musculaire'),
-              textCapitalization: TextCapitalization.sentences,
-            ),
-          ],
+        content: TextField(
+          controller: nameCtrl,
+          decoration: const InputDecoration(labelText: 'Nom *', hintText: 'Ex: Squat'),
+          textCapitalization: TextCapitalization.sentences,
+          autofocus: true,
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
@@ -456,7 +441,6 @@ class _BottomBar extends ConsumerWidget {
         id: const Uuid().v4(),
         workoutId: workoutId,
         name: nameCtrl.text.trim(),
-        muscleGroup: muscleCtrl.text.trim().isEmpty ? null : muscleCtrl.text.trim(),
         orderIndex: exercises.length,
       );
       await ref.read(workoutRepoProvider).insertExercise(exercise);

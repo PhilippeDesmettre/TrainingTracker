@@ -185,9 +185,11 @@ class _HistoryItemState extends State<_HistoryItem> {
   }
 
   String _formatDuration(Duration d) {
-    final m = d.inMinutes;
-    if (m < 60) return '${m}min';
-    return '${d.inHours}h${d.inMinutes.remainder(60).toString().padLeft(2, '0')}';
+    final h = d.inHours;
+    final m = d.inMinutes.remainder(60);
+    final s = d.inSeconds.remainder(60);
+    if (h > 0) return '${h}h ${m.toString().padLeft(2, '0')}min ${s.toString().padLeft(2, '0')}s';
+    return '${m}min ${s.toString().padLeft(2, '0')}s';
   }
 }
 

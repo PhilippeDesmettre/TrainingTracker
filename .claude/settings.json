@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dart tool/generate_beep.dart)",
+      "Bash(flutter pub:*)",
+      "Bash(dart run:*)"
+    ]
+  }
+}

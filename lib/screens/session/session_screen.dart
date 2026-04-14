@@ -44,8 +44,6 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
 
   Future<void> _init() async {
     _audioPlayer = AudioPlayer();
-    await _audioPlayer.setAsset('assets/sounds/beep.wav');
-    debugPrint('[AUDIO] asset loaded');
     await _startSession();
   }
 
@@ -62,33 +60,17 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
     await ref.read(sessionProvider.notifier).startSession(widget.workoutId);
     if (!mounted) return;
     ref.read(sessionProvider.notifier).onRestDone = () async {
-      debugPrint('[AUDIO] onRestDone called');
-      if (!mounted) {
-        debugPrint('[AUDIO] widget not mounted, abort');
-        return;
-      }
-
-      try {
-        debugPrint('[AUDIO] before seek');
-        await _audioPlayer.seek(Duration.zero);
-        debugPrint('[AUDIO] after seek');
-
-        debugPrint('[AUDIO] before play');
-        await _audioPlayer.play();
-        debugPrint('[AUDIO] after play');
-      } catch (e, st) {
-        debugPrint('[AUDIO] error: $e');
-        debugPrint('$st');
-      }
-
-      debugPrint('[AUDIO] triggering haptics');
+      if (!mounted) return;
+      _audioPlayer.seek(Duration.zero).then((_) => _audioPlayer.play());
       HapticFeedback.heavyImpact();
-      Future.delayed(const Duration(milliseconds: 300), () {
-        HapticFeedback.heavyImpact();
-        Future.delayed(const Duration(milliseconds: 300), HapticFeedback.heavyImpact);
-      });
+      await Future.delayed(const Duration(milliseconds: 200));
+      HapticFeedback.heavyImpact();
+      await Future.delayed(const Duration(milliseconds: 200));
+      HapticFeedback.heavyImpact();
     };
     setState(() => _loading = false);
+    await _audioPlayer.setAsset('assets/sounds/beep.wav');
+    await _audioPlayer.load();
     _elapsedTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       setState(() => _elapsed = ref.read(sessionProvider)?.elapsed ?? Duration.zero);
     });
@@ -234,7 +216,13 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
             ? _RestBanner(
                 secondsRemaining: session.restSecondsRemaining,
                 totalSeconds: session.restTotalSeconds,
-                onSkip: () => ref.read(sessionProvider.notifier).skipRest(),
+                onSkip: () {
+                  ref.read(sessionProvider.notifier).skipRest();
+                  final nextId = _findNextSetId(ref.read(sessionProvider)!);
+                  if (nextId != null) {
+                    ref.read(sessionProvider.notifier).completeSetById(nextId);
+                  }
+                },
               )
             : allDone
                 ? _FinishButton(
